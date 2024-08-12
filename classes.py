@@ -29,18 +29,31 @@ class Storage:
     def has_username(self, username):
         return username in self.store
 
+    def find_user(self, username):
+        if username in self.store:
+            return self.store[username]
+        else:
+            raise Exception('not check')
 
 class Cache:
     def __init__(self):
         self.cache = {}
 
-    def put(self, sessionId, username):
-        self.cache[sessionId] = username
+    def put(self, session_id, username):
+        self.cache[session_id] = username
 
-    def contains(self, sessionId):
-        print(self.cache)
-        return sessionId in self.cache
+    def contains(self, session_id):
+        return session_id in self.cache
 
+    def clear(self, session_id):
+        if session_id in self.cache:
+            del self.cache[session_id]
+
+    def find_username(self, session_id):
+        if session_id in self.cache:
+            return self.cache[session_id]
+        else:
+            raise Exception('not check')
 
 class AuthService:
     def __init__(self, storage, cache):
@@ -63,6 +76,13 @@ class AuthService:
 
     def is_auth(self, session_id):
         return self.cache.contains(session_id)
+
+    def logout(self, session_id):
+        self.cache.clear(session_id)
+
+    def find_user(self, session_id):
+        username = self.cache.find_username(session_id)
+        return self.storage.find_user(username)
 
 
 def server(auth_service):
@@ -90,12 +110,26 @@ def server(auth_service):
 
         return "ok"
 
+    @app.route("/logout", methods=['GET'])
+    def logout():
+        if 'session_id' in request.cookies:
+            session_id = request.cookies['session_id']
+            auth_service.logout(session_id)
+
+        @after_this_request
+        def clear_cookie(response):
+            response.delete_cookie('session_id')
+            return response
+
+        return "logout ok"
+
     @app.route("/load", methods=['GET'])
     def load():
         if 'session_id' in request.cookies:
             session_id = request.cookies['session_id']
             if auth_service.is_auth(session_id):
-                return "success"
+                user = auth_service.find_user(session_id)
+                return "success, your role: " + user.role
             else:
                 raise Exception("not auth1")
         else:
