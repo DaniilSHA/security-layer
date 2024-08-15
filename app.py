@@ -1,6 +1,6 @@
-from classes import Storage, Cache, AuthService, server
+from classes import Storage, AesEncrypter, AuthService, server
 
 storage = Storage()
-cache = Cache()
-auth_service = AuthService(storage, cache)
+aes_encrypter = AesEncrypter()
+auth_service = AuthService(storage, aes_encrypter)
 server = server(auth_service)

@@ -1,5 +1,8 @@
 import hashlib
-import uuid
+import pickle
+
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 from flask import Flask, request, after_this_request
 
@@ -35,36 +38,32 @@ class Storage:
         else:
             raise Exception('not check')
 
-class Cache:
+
+class AesEncrypter:
+
     def __init__(self):
-        self.cache = {}
+        self.key = get_random_bytes(16)
 
-    def put(self, session_id, username):
-        self.cache[session_id] = username
+    def encrypt(self, decrypt_data):
+        cipher = AES.new(self.key, AES.MODE_CBC, 'init_val'.encode("utf8"))
+        encrypt_data = cipher.encrypt(decrypt_data)
+        return encrypt_data
 
-    def contains(self, session_id):
-        return session_id in self.cache
-
-    def clear(self, session_id):
-        if session_id in self.cache:
-            del self.cache[session_id]
-
-    def find_username(self, session_id):
-        if session_id in self.cache:
-            return self.cache[session_id]
-        else:
-            raise Exception('not check')
+    def decrypt(self, encrypt_data):
+        cipher = AES.new(self.key, AES.MODE_CBC, 'init_val'.encode("utf8"))
+        decrypt_data = cipher.decrypt(encrypt_data)
+        return decrypt_data
 
 class AuthService:
-    def __init__(self, storage, cache):
+    def __init__(self, storage, aes_encrypter):
         self.storage = storage
-        self.cache = cache
+        self.aes_encrypter = aes_encrypter
 
     def login(self, username, password):
         if self.storage.login(username, password):
-            session_id = uuid.uuid4().hex
-            self.cache.put(session_id, username)
-            return session_id
+            user = self.storage.find_user(username)
+            user_str = str(pickle.dumps(user), 'utf-8')
+            return self.aes_encrypter.encrypt(user_str)
         else:
             return ''
 
@@ -75,14 +74,9 @@ class AuthService:
             raise Exception("username is busy")
 
     def is_auth(self, session_id):
-        return self.cache.contains(session_id)
-
-    def logout(self, session_id):
-        self.cache.clear(session_id)
-
-    def find_user(self, session_id):
-        username = self.cache.find_username(session_id)
-        return self.storage.find_user(username)
+        user_str = self.aes_encrypter.decrypt(session_id)
+        user = pickle.loads(bytes(user_str, 'utf-8'))
+        return user
 
 
 def server(auth_service):
@@ -112,9 +106,6 @@ def server(auth_service):
 
     @app.route("/logout", methods=['GET'])
     def logout():
-        if 'session_id' in request.cookies:
-            session_id = request.cookies['session_id']
-            auth_service.logout(session_id)
 
         @after_this_request
         def clear_cookie(response):
@@ -127,11 +118,11 @@ def server(auth_service):
     def load():
         if 'session_id' in request.cookies:
             session_id = request.cookies['session_id']
-            if auth_service.is_auth(session_id):
-                user = auth_service.find_user(session_id)
-                return "success, your role: " + user.role
-            else:
+            user = auth_service.is_auth(session_id)
+            if user is None:
                 raise Exception("not auth1")
+            else:
+                return "success, your role: " + user.role
         else:
             raise Exception("not auth2")
 
