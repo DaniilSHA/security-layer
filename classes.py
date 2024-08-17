@@ -61,7 +61,7 @@ class JwtEmitter:
         return jwt.encode(payload, self.key, algorithm=self.alg)
 
     def validate(self, token):
-        payload = jwt.decode(token, algorithms=[self.alg], options={'verify_exp': True})
+        payload = jwt.decode(token, self.key, algorithms=[self.alg], options={'verify_exp': True})
         return payload
 
 
@@ -89,7 +89,7 @@ class AuthService:
         return access_token, refresh_token
 
     def validate_token(self, token):
-        return self.jwt_emitter.valiadte(token)
+        return self.jwt_emitter.validate(token)
 
 def server(auth_service):
     app = Flask(__name__)
