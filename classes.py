@@ -2,13 +2,16 @@ import binascii
 import codecs
 import hashlib
 import pickle
+from datetime import datetime, timedelta
+
+import jwt
 
 import requests
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 
-from flask import Flask, request, after_this_request
+from flask import Flask, request, after_this_request, jsonify
 
 
 class User:
@@ -42,40 +45,37 @@ class Storage:
         else:
             raise Exception('not check')
 
-
-class AesEncrypter:
-
+class JwtEmitter:
     def __init__(self):
-        self.key = b'javajavajavajava'
+        self.key = 'secret_key'
+        self.alg = 'HS256'
 
-    def encrypt(self, decrypt_data_str):
-        cipher = AES.new(self.key, AES.MODE_CBC, 'init_val_is_16by'.encode('utf8'))
-        padded_data = pad(bytes(decrypt_data_str, 'utf8'), AES.block_size)
-        encrypt_data = cipher.encrypt(padded_data)
-        encrypt_data_str = binascii.hexlify(encrypt_data).decode()
-        return encrypt_data_str
+    def emit(self, username, role, is_access):
+        now = datetime.utcnow()
+        payload = {
+            'iat': now,
+            'exp': now + timedelta(minutes=1 if is_access else 60),
+            'subject': username,
+            'role': role
+        }
+        return jwt.encode(payload, self.key, algorithm=self.alg)
 
-    def decrypt(self, encrypt_data_str):
-        encrypt_data = binascii.unhexlify(encrypt_data_str)
-        cipher = AES.new(self.key, AES.MODE_CBC, 'init_val_is_16by'.encode('utf8'))
-        decrypt_data = cipher.decrypt(encrypt_data)
-        un_padded_data = unpad(decrypt_data, AES.block_size)
-        decrypt_data_str = str(un_padded_data, 'utf8')
-        return decrypt_data_str
+    def validate(self, token):
+        payload = jwt.decode(token, algorithms=[self.alg], options={'verify_exp': True})
+        return payload
+
 
 class AuthService:
-    def __init__(self, storage, aes_encrypter):
+    def __init__(self, storage, jwt_emitter):
         self.storage = storage
-        self.aes_encrypter = aes_encrypter
+        self.jwt_emitter = jwt_emitter
 
     def login(self, username, password):
         if self.storage.login(username, password):
             user = self.storage.find_user(username)
-            dump = pickle.dumps(user)
-            user_str = codecs.encode(dump, 'base64').decode()
-            return self.aes_encrypter.encrypt(user_str)
+            return self.gen_tokens(user.username, user.role)
         else:
-            return ''
+            return None
 
     def registration(self, username, password):
         if not self.storage.has_username(username):
@@ -83,19 +83,13 @@ class AuthService:
         else:
             raise Exception('username is busy')
 
-    def is_auth(self, session_id):
-        user_str = self.aes_encrypter.decrypt(session_id)
-        load = codecs.decode(user_str.encode(), 'base64')
-        user_from_session_id = pickle.loads(load)
-        if self.storage.find_user(user_from_session_id.username):
-            user_from_storage = self.storage.find_user(user_from_session_id.username)
-            if user_from_session_id.psw_hash == user_from_storage.psw_hash:
-                return user_from_storage
-            else:
-                return None
-        else:
-            return None
+    def gen_tokens(self, username, role):
+        access_token = self.jwt_emitter.emit(username, role, True)
+        refresh_token = self.jwt_emitter.emit(username, role, False)
+        return access_token, refresh_token
 
+    def validate_token(self, token):
+        return self.jwt_emitter.valiadte(token)
 
 def server(auth_service):
     app = Flask(__name__)
@@ -113,74 +107,39 @@ def server(auth_service):
         r = request.json
         username = r['username']
         password = r['password']
-        session_id = auth_service.login(username, password)
+        access_token, refresh_token = auth_service.login(username, password)
+        return jsonify({'access_token': access_token, 'refresh_token': refresh_token})
 
-        @after_this_request
-        def set_cookie(response):
-            response.set_cookie('session_id', str(session_id), max_age=10000)
-            return response
+    @app.route('/refresh', methods=['POST'])
+    def refresh():
+        r = request.json
+        if 'refresh_token' in r:
+            refresh_token = r['refresh_token']
+            payload = auth_service.validate_token(refresh_token)
+            if payload is not None:
+                access_token, refresh_token = auth_service.gen_tokens(payload['subject'], payload['role'])
+                return jsonify({'access_token': access_token, 'refresh_token': refresh_token})
+            else:
+                raise Exception('not valid token')
+        else:
+            raise Exception('not refresh_token')
 
-        return 'ok'
-
-    @app.route('/logout', methods=['GET'])
-    def logout():
-
-        @after_this_request
-        def clear_cookie(response):
-            response.delete_cookie('session_id')
-            return response
-
-        return 'logout ok'
 
     @app.route('/load', methods=['GET'])
     def load():
-        if 'session_id' in request.cookies:
-            session_id = request.cookies['session_id']
-            user = auth_service.is_auth(session_id)
-            if user is None:
-                raise Exception('not auth1')
+        if 'Auth' in request.headers:
+            auth_header = request.headers['Auth']
+            if auth_header.startswith('Bearer_'):
+                access_token = auth_header[len('Bearer_'):]
+                payload = auth_service.validate_token(access_token)
+                if payload is None:
+                    raise Exception('not auth3')
+                else:
+                    return 'your role: ' + payload['role']
             else:
-                return 'success, your role: ' + user.role
+                raise Exception('not auth2')
         else:
-            raise Exception('not auth2')
+            raise Exception('not auth1')
 
-    @app.route('/gen-api-key', methods=['POST'])
-    def gen_api_key():
-        if 'session_id' in request.cookies:
-            session_id = request.cookies['session_id']
-            user = auth_service.is_auth(session_id)
-            if user is None:
-                raise Exception('not auth1')
-            else:
-                r = request.json
-                password = r['password']
-                return auth_service.login(user.username, password)
-        else:
-            raise Exception('not auth2')
-
-    @app.route('/load-on-api-key', methods=['POST'])
-    def load_on_api_key():
-        r = request.json
-        if 'api-key' in r:
-            api_key = r['api-key']
-            user = auth_service.is_auth(api_key)
-            if user is None:
-                raise Exception('not auth1')
-            else:
-                return 'api key info: ' + str(user.psw_hash)
-        else:
-            raise Exception('not auth2')
-
-    @app.route('/get-data-on-api-key', methods=['POST'])
-    def get_data_on_api_key():
-        r = request.json
-        if 'api-key' in r:
-            api_key = r['api-key']
-            data = {'api-key': api_key}
-            headers = {'Content-type': 'application/json'}
-            response = requests.post('http://localhost:8082/load-on-api-key', json=data, headers=headers)
-            return response.content
-        else:
-            raise Exception('not api-key')
 
     return app
